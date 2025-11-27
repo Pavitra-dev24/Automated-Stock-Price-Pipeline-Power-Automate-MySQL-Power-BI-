@@ -1,55 +1,101 @@
-# Automated Stock Price Pipeline
+# Stock Price Prediction Pipeline
 
-### Power Automate | MySQL | Power BI
+This repository contains a complete pipeline that:
 
----
+1. Collects real-time intraday stock prices (scraped by Power Automate) and stores them in a MySQL database table `StockPrices`.
+2. Fetches historical intraday data from Yahoo Finance (`yfinance`) for the last 30 days (5‑minute bars) and complements it with the scraped data.
+3. Trains (or loads) a PyTorch LSTM model per stock to predict the **next 5‑minute** price.
+4. Stores predictions in a MySQL table `Predictions` ready for visualization (Power BI).
 
-## Overview
-The **Automated Stock Price Pipeline** is an end-to-end automated data system that scrapes live stock prices, cleans and stores them in a MySQL database, and powers interactive Power BI dashboards for real-time market analysis.
-
-This project eliminates manual data collection by using **Microsoft Power Automate** to fetch live data and **Power BI** to visualize it, enabling faster and data-driven investment decisions.
-
----
-
-## Objectives
-- Automate stock data extraction from multiple online sources.
-- Clean and persist data into a structured MySQL database.
-- Visualize and analyze real-time market movements in Power BI.
-- Send automatic alerts for significant stock fluctuations.
+> **Note:** The pipeline uses PyTorch (with optional CUDA/GPU). The code normalizes timestamps to **UTC‑naive** datetimes and handles various yfinance quirks (multiindex columns, timezone-aware data, 1‑minute → 5‑minute resampling fallbacks).
 
 ---
 
-## System Architecture
-1. **Data Extraction (Power Automate):**
-   - Flows scrape live stock data from APIs or websites.
-   - Data is formatted and validated before storage.
+## Table schemas (MySQL)
 
-2. **Data Storage (MySQL):**
-   - Cleaned and timestamped data is inserted into MySQL tables.
-   - Supports historical tracking and audit logs.
+You can create the tables automatically: the script will create them if they don't exist. For reference:
 
-3. **Visualization (Power BI):**
-   - Power BI connects directly to MySQL.
-   - Interactive dashboards display live prices, trends, and alerts.
+### `StockPrices`
+
+```sql
+CREATE TABLE IF NOT EXISTS StockPrices (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  stock_name VARCHAR(64) NOT NULL,
+  price DECIMAL(12,4) NOT NULL,
+  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_stock_time (stock_name, timestamp)
+);
+```
+
+* `timestamp` is `DATETIME` (MySQL) and will be normalized by the script assuming it is stored in a local timezone (default `Asia/Kolkata`).
+
+### `Predictions`
+
+```sql
+CREATE TABLE IF NOT EXISTS Predictions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  stock_name VARCHAR(64) NOT NULL,
+  predicted_price DECIMAL(12,4) NOT NULL,
+  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_pred_stock_time (stock_name, timestamp)
+);
+```
+
+* `Predictions` will be truncated at the beginning of each run to avoid clumping old results with new ones.
 
 ---
 
-## Tech Stack
-| Layer | Technology |
-|--------|-------------|
-| Automation | Microsoft Power Automate |
-| Database | MySQL |
-| Visualization | Power BI |
-| Version Control | GitHub |
+## Prerequisites
+
+* Python 3.9+ (tested on 3.10/3.11/3.13)
+* PyTorch installed with CUDA if you plan to use GPU (optional but recommended).
+* MySQL server accessible (local or remote)
+* Power Automate flow configured to insert real-time scraped rows into `StockPrices` every 5 minutes.
 
 ---
 
-## Features
-- Automated data refresh and scheduling  
-- Data cleaning and normalization  
-- Interactive Power BI dashboards  
-- Price change alerts  
-- Historical trend analysis  
+## Configuration
+
+1. **Database credentials** — the script uses `sqlalchemy.engine.URL.create(...)` to build a safe connection URL (this avoids errors when your password contains `@` or other special characters).
+
+2. **Stocks list** — edit the `STOCKS` list in the script to add/remove tickers. The code appends `.NS` to each ticker for Yahoo India exchange (e.g., `RELIANCE.NS`).
+
+3. **Time zone handling** — by default the script assumes DB `DATETIME` values are in `LOCAL_TZ` (`Asia/Kolkata`) and converts them to UTC-naive datetimes for internal processing. Change `LOCAL_TZ` if your DB uses another timezone.
 
 ---
 
+## How it works (high level)
+
+1. The script ensures the two tables (`StockPrices`, `Predictions`) exist.
+2. It truncates `Predictions` so the table only contains the results from the latest run.
+3. For each stock in `STOCKS`:
+
+   * Fetch scraped rows from `StockPrices`.
+   * Try to fetch intraday historical data via `yfinance`:
+
+     * preferred: `yf.download(ticker, interval='5m', period='30d')`.
+     * fallback: try other periods (`60d`,`30d`,`14d`,`7d`,`5d`).
+     * if 5m data is missing, try 1m downloads and resample to 5m (this often works and is robust to Yahoo's varying responses).
+     * if still missing, try `yf.Ticker(ticker).history(...)`.
+     * if all fail, try getting the last market price from `t.info['regularMarketPrice']` and use a fallback predictor.
+   * Normalize all timestamps to UTC-naive datetimes to avoid tz-aware/naive mixing.
+   * Combine yfinance and DB-scraped rows, sort, and deduplicate timestamps.
+   * If samples < `MIN_SAMPLES` the script uses a fallback linear extrapolation (or last price) and saves it.
+   * Otherwise train (or load) a PyTorch LSTM model per stock and predict single-step (next 5 min).
+   * Store predictions into `Predictions`.
+
+---
+
+## Power Automate notes
+
+* Your Power Automate flow should append rows to the `StockPrices` table with: `stock_name`, `price` (decimal), and an optional `timestamp`. If you omit a timestamp, MySQL `CURRENT_TIMESTAMP` will be used.
+* Keep the scraping frequency at or above 5 minutes to match the model interval. The script expects the scraped data is every 5 minutes and will combine it with yfinance intraday data.
+
+---
+
+## Model details
+
+* **Architecture:** Stacked LSTM (2 layers), dropout, final linear layer producing single output.
+* **Input:** sequences of `TIME_STEPS` (default 10) of normalized prices (MinMaxScaler on full series).
+* **Output:** one-step ahead prediction (the next 5-minute price)
+* **Training:** train/validation split uses `train_test_split(..., shuffle=False)` to preserve time ordering. Early stopping and best-model checkpointing are implemented.
