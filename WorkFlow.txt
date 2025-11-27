@@ -1,19 +1,31 @@
-WebAutomation.LaunchEdge.LaunchEdge Url: $'''https://www.nseindia.com/market-data/live-equity-market''' WindowState: WebAutomation.BrowserWindowState.Normal ClearCache: False ClearCookies: False WaitForPageToLoadTimeout: 60 Timeout: 60 TargetDesktop: $'''{\"DisplayName\":\"Local computer\",\"Route\":{\"ServerType\":\"Local\",\"ServerAddress\":\"\"},\"DesktopType\":\"local\"}''' BrowserInstance=> Browser
-WebAutomation.ExtractData.ExtractTable BrowserInstance: Browser Control: $'''html > body > div:eq(11) > div > section > div > div > div > div > div:eq(0) > div > div > div > div:eq(3) > div > div > table > tbody > tr''' ExtractionParameters: {[$'''td:eq(0)''', $'''Own Text''', $'''''', $'''Value #1'''], [$'''td:eq(1)''', $'''Own Text''', $'''''', $'''Value #2'''], [$'''td:eq(2)''', $'''Own Text''', $'''''', $'''Value #3'''], [$'''td:eq(3)''', $'''Own Text''', $'''''', $'''Value #4'''] } PostProcessData: False TimeoutInSeconds: 60 ExtractedData=> DataFromWebPage
-Database.Connect ConnectionString: $'''Driver={MySQL ODBC 9.4 Unicode driver};Server=127.0.0.1;Port=3306;Database=StockData;Uid=root;Pwd=HelloMello@13;Option=3;''' Connection=> MyConn
 SET NewVar TO 0
+WebAutomation.LaunchEdge.LaunchEdge Url: $'''https://in.tradingview.com/chart/dlQBZcZE/''' WindowState: WebAutomation.BrowserWindowState.Normal ClearCache: False ClearCookies: False WaitForPageToLoadTimeout: 60 Timeout: 60 PiPUserDataFolderMode: WebAutomation.PiPUserDataFolderModeEnum.AutomaticProfile TargetDesktop: $'''{\"DisplayName\":\"Local computer\",\"Route\":{\"ServerType\":\"Local\",\"ServerAddress\":\"\"},\"DesktopType\":\"local\"}''' BrowserInstance=> Browser
+Database.Connect ConnectionString: $'''Driver={MySQL ODBC 9.4 Unicode driver};Server=127.0.0.1;Port=3306;Database=StockData;Uid=root;Pwd=HelloMello@13;Option=3;''' Connection=> MyConn
+Cmd.Open.Open Directory: $'''C:\\Users\\trafl\\Desktop\\Python''' Session=> CmdSession
+LABEL Re_Launch
+Variables.IncreaseVariable Value: NewVar IncrementValue: 1
+WebAutomation.ExtractData.ExtractTable BrowserInstance: Browser Control: $'''html > body > div:eq(1) > div > div:eq(5) > div > div:eq(1) > div:eq(0) > div:eq(0) > div:eq(0) > div:eq(1) > div > div > div > div:eq(1) > div > div > div:eq(1) > div > div''' ExtractionParameters: {[$'''div > div > div:eq(1) > span > div > div > span:eq(0)''', $'''Own Text''', $'''''', $'''Value #1'''], [$'''div > div > span:eq(0) > span''', $'''Own Text''', $'''''', $'''Value #2'''] } PostProcessData: False TimeoutInSeconds: 60 ExtractedData=> DataFromWebPage
 LOOP FOREACH CurrentItem IN DataFromWebPage
-    Variables.IncreaseVariable Value: NewVar IncrementValue: 1
-    IF NewVar > 51 THEN
-        EXIT LOOP
+    SET CName TO CurrentItem['value #1']
+    SET CPrice TO CurrentItem['value #2']
+    Text.Replace Text: CPrice TextToFind: $''',''' IsRegEx: False IgnoreCase: False ReplaceWith: $'''%''%''' ActivateEscapeSequences: False Result=> CPriceClean
+    IF NewVar > 5 THEN
+        Database.ExecuteSqlStatement.Execute Connection: MyConn Statement: $'''INSERT INTO CurrentPrices (stock_name, price)
+VALUES (\'%CName%\', %CPriceClean%);''' Timeout: 30 Result=> QueryResult
     END
-    SET CSymbol TO CurrentItem['value #1']
-    SET COpen TO CurrentItem['value #2']
-    Text.Replace Text: COpen TextToFind: $''',''' IsRegEx: False IgnoreCase: False ReplaceWith: $'''%''%''' ActivateEscapeSequences: False Result=> COpenClean
-    SET CHigh TO CurrentItem['value #3']
-    Text.Replace Text: CHigh TextToFind: $''',''' IsRegEx: False IgnoreCase: False ReplaceWith: $'''%''%''' ActivateEscapeSequences: False Result=> CHighClean
-    SET CLow TO CurrentItem['value #4']
-    Text.Replace Text: CLow TextToFind: $''',''' IsRegEx: False IgnoreCase: False ReplaceWith: $'''%''%''' ActivateEscapeSequences: False Result=> CLowClean
-    Database.ExecuteSqlStatement.Execute Connection: MyConn Statement: $'''INSERT INTO StockPrices (symbol, open_price, high_price, low_price, ts)
-VALUES (\'%CSymbol%\', %COpenClean%, %CHighClean%, %CLowClean%, NOW());''' Timeout: 30 Result=> QueryResult
+    Database.ExecuteSqlStatement.Execute Connection: MyConn Statement: $'''INSERT INTO StockPrices (stock_name, price)
+VALUES (\'%CName%\', %CPriceClean%);''' Timeout: 30 Result=> QueryResult
 END
+IF NewVar > 5 THEN
+    GOTO Finish
+END
+IF NewVar = 5 THEN
+    Cmd.Write Session: CmdSession Command: $'''python LSTM.py''' SendEnter: True
+END
+WAIT 300
+GOTO Re_Launch
+LABEL Finish
+Cmd.Close Session: CmdSession
+Database.Close Connection: MyConn
+WebAutomation.CloseWebBrowser BrowserInstance: Browser
+# Program Finished!!
