@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS Predictions (
 
 ---
 
-## How it works (high level)
+## High level overview
 
 1. The script ensures the two tables (`StockPrices`, `Predictions`) exist.
 2. It truncates `Predictions` so the table only contains the results from the latest run.
@@ -99,3 +99,56 @@ CREATE TABLE IF NOT EXISTS Predictions (
 * **Input:** sequences of `TIME_STEPS` (default 10) of normalized prices (MinMaxScaler on full series).
 * **Output:** one-step ahead prediction (the next 5-minute price)
 * **Training:** train/validation split uses `train_test_split(..., shuffle=False)` to preserve time ordering. Early stopping and best-model checkpointing are implemented.
+
+---
+
+## Architecture overview
+
+```
+[Power Automate] ---> (HTTPS / Web interaction / Browser scrape) ---> [Power Automate Flow] 
+          |                                              |
+          | every 5 minutes                               | INSERT row(s)
+          v                                              v
+     (web pages)                                    [MySQL Server (StockData DB)]
+                                                         |  (StockPrices table)
+                                                         |
+              (scheduled)                                v
+                           [Python script: LSTM.py]  <--- reads StockPrices
+                          |        ^
+                          | fetches historical     |
+                          | yfinance (30d @5m)     |
+                          v                        |
+                    [yfinance (Yahoo)]              |
+                          |                        |
+                          v                        |
+                 Trained/loaded PyTorch LSTM        |
+                          | produces predictions   |
+                          v                        |
+                 Writes to Predictions table ------>
+                                                         |
+                                                         v
+                                                    [Power BI]
+                                                    (connected to MySQL Predictions table)
+```
+
+### Component responsibilities
+
+* **Power Automate (Flow)**
+
+  * Scrapes stock prices from chosen web sources every 5 minutes.
+  * Sends the scraped row(s) to your MySQL `StockPrices` table (INSERT). Each insert contains `stock_name`, `price` and optionally `timestamp`.
+  * Invokes python script `LSTM.py`.
+
+* **MySQL Server**
+
+  * Central persistence for both raw scraped intraday rows (`StockPrices`) and the model output (`Predictions`).
+  * The Python pipeline reads `StockPrices`, and writes back a small batch into `Predictions` (table truncated first on each run).
+
+* **Python / PyTorch pipeline** (`LSTM.py`)
+
+  * Reads scraped rows from `StockPrices`, fetches historical intraday from Yahoo via `yfinance`, normalizes timestamps to UTC-naive, stitches both sources, trains/loads an LSTM model per-stock and produces one-step-ahead (5-minute) predictions.
+  * Truncates `Predictions` table at start and writes predicted rows ready for Power BI.
+
+* **Power BI**
+
+  * Connects directly to the MySQL `Predictions` table to render dashboards.
