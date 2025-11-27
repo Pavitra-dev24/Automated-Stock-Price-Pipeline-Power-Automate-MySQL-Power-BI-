@@ -7,7 +7,7 @@ This repository contains a complete pipeline that:
 3. Trains (or loads) a PyTorch LSTM model per stock to predict the **next 5‑minute** price.
 4. Stores predictions in a MySQL table `Predictions` ready for visualization (Power BI).
 
-> **Note:** The pipeline uses PyTorch (with optional CUDA/GPU). The code normalizes timestamps to **UTC‑naive** datetimes and handles various yfinance quirks (multiindex columns, timezone-aware data, 1‑minute → 5‑minute resampling fallbacks).
+> **Note:** The pipeline uses PyTorch (with optional CUDA/GPU). The code normalizes timestamps to **UTC‑naive** datetimes.
 
 ---
 
